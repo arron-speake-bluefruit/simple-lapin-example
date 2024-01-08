@@ -6,31 +6,31 @@ use lapin::{
 };
 use std::process::ExitCode;
 
+/// Create connection to the AMQP server.
 async fn connect_to_amqp_server() -> Result<lapin::Connection, Error> {
-    // Create connection to the AMQP server.
     let server_uri = "amqp://localhost:5672";
     let options = lapin::ConnectionProperties {
         locale: "en_GB".into(),
         ..Default::default()
     };
 
-    let result = lapin::Connection::connect(server_uri, options).await;
-
-    result.map_err(Error::Connection)
+    lapin::Connection::connect(server_uri, options)
+        .await
+        .map_err(Error::Connection)
 }
 
 async fn create_amqp_channel(connection: &lapin::Connection) -> Result<lapin::Channel, Error> {
-    let result = connection.create_channel().await;
-
-    result.map_err(Error::AmqpSetup)
+    connection.create_channel().await.map_err(Error::AmqpSetup)
 }
 
 async fn declare_amqp_queue(channel: &lapin::Channel, name: &str) -> Result<lapin::Queue, Error> {
     let options = QueueDeclareOptions::default();
     let argument = FieldTable::default();
-    let result = channel.queue_declare(name, options, argument).await;
 
-    result.map_err(Error::AmqpSetup)
+    channel
+        .queue_declare(name, options, argument)
+        .await
+        .map_err(Error::AmqpSetup)
 }
 
 async fn create_amqp_consumer(
@@ -41,14 +41,14 @@ async fn create_amqp_consumer(
     let options = BasicConsumeOptions::default();
     let argument = FieldTable::default();
 
-    let result = channel
+    channel
         .basic_consume(queue_name, tag, options, argument)
-        .await;
-
-    result.map_err(Error::AmqpSetup)
+        .await
+        .map_err(Error::AmqpSetup)
 }
 
-async fn run_producer(channel: lapin::Channel, queue_name: &str) -> Result<(), Error> {
+/// Publishes a small message to the AMQP server until a failure. Returns the failing error.
+async fn run_publisher(channel: lapin::Channel, queue_name: &str) -> Result<(), Error> {
     let payload = b"Hello, world!";
 
     loop {
@@ -66,6 +66,8 @@ async fn run_producer(channel: lapin::Channel, queue_name: &str) -> Result<(), E
     }
 }
 
+/// Awaits the consumer to report an incoming delivery forever. Prints successfully received
+/// deliveries, immediately returns any discovered errors.
 async fn run_consumer(mut consumer: lapin::Consumer) -> Result<(), Error> {
     while let Some(delivery) = consumer.next().await {
         let delivery = delivery.map_err(Error::ConsumerDelivery)?;
@@ -82,6 +84,8 @@ async fn run_consumer(mut consumer: lapin::Consumer) -> Result<(), Error> {
     Ok(())
 }
 
+/// Async entry point to the program. Sets up an AMQP connection, then runs a simple consumer and
+/// publisher. See [`run_consumer`] and [`run_publisher`].
 async fn run_async() -> Result<(), Error> {
     let queue_name = "hello";
 
@@ -93,21 +97,26 @@ async fn run_async() -> Result<(), Error> {
 
     // Run consumer & producer
     let consumer = run_consumer(consumer);
-    let producer = run_producer(channel, queue_name);
-    let result = futures::future::join(consumer, producer).await;
+    let publisher = run_publisher(channel, queue_name);
+    let result = futures::future::join(consumer, publisher).await;
 
     // Report errors from consumer/producer functions
     result.0.or(result.1)
 }
 
+/// Run the program, returning an [`Error`] on failure.
 fn run() -> Result<(), Error> {
+    // Set up the tokio runtime. There's a macro `tokio::main` for this, but I prefer doing it
+    // manually.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .build()
         .map_err(Error::Runtime)?;
 
+    // Start the async runtime with `run_async` as the entrypoint. Return value is passed up.
     runtime.block_on(run_async())
 }
 
+/// Entry point. Calls [`run`] and then checks the result, printing error information if present.
 fn main() -> ExitCode {
     if let Err(e) = run() {
         print_error(&e);
@@ -117,6 +126,7 @@ fn main() -> ExitCode {
     }
 }
 
+/// Prints out an error's description and its sources.
 fn print_error(mut error: &dyn std::error::Error) {
     eprintln!("{error}");
 
@@ -126,6 +136,8 @@ fn print_error(mut error: &dyn std::error::Error) {
     }
 }
 
+/// An error encounterable by the program. There's a nicer way to do this, but this is fine for an
+/// example.
 #[derive(Debug)]
 enum Error {
     Runtime(std::io::Error),
